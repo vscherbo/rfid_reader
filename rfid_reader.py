@@ -39,7 +39,7 @@ class RFIDReader(Application, PGapp):
                 event = READER.read_one()
                 if event and event.type == EV_KEY:
                     c_ev = categorize(event)
-                    if c_ev.keystate == 0:
+                    if c_ev.keystate == 0:  # key UP
                         #print(c_ev, type(c_ev))
                         print('st={}, code={}'.format(c_ev.keystate, c_ev.keycode))
                         if c_ev.keycode != 'KEY_ENTER':  # and c_ev.keystate == 0:
@@ -52,6 +52,7 @@ class RFIDReader(Application, PGapp):
             print(card_num)
             if not self.do_query(sql_insert.format(card_num)):
                 print('DB Error')
+                # write to local CSV file
 
 
 if __name__ == '__main__':
