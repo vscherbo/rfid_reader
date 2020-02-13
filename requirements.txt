@@ -1,2 +1,2 @@
 evdev
-#pyusb
+git+https://github.com/vscherbo/pg_app.git
