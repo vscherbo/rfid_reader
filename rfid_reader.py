@@ -50,16 +50,22 @@ class RFIDReader(Application, PGapp):
 
             card_num = ''.join(card_num_list)
             print(card_num)
+            with open(RFID_CSV_FILE, 'a') as csv:
+                csv.write(card_num)
             if not self.do_query(sql_insert.format(card_num)):
                 print('DB Error')
                 # write to local CSV file
 
 
 if __name__ == '__main__':
+    # move to conf
+    RFID_NAME = 'RFID'
     DEV_DIR = '/dev/input'
     DEV_ID_DIR = '%s/by-id' % DEV_DIR
+    RFID_CSV_FILE = 'card_history.csv'
+
     for inp in os.listdir(DEV_ID_DIR):
-        if 'RFID' in inp:
+        if RFID_NAME in inp:
             dev_link = os.readlink('%s/%s' % (DEV_ID_DIR, inp))
             dev_file = '%s/%s' % (DEV_DIR, dev_link.replace('../', ''))
             #print(dev_file)
