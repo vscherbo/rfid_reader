@@ -51,7 +51,7 @@ class RFIDReader(Application, PGapp):
             card_num = ''.join(card_num_list)
             print(card_num)
             with open(RFID_CSV_FILE, 'a') as csv:
-                csv.write(card_num)
+                csv.write(card_num + '\n')
             if not self.do_query(sql_insert.format(card_num)):
                 print('DB Error')
                 # write to local CSV file
