@@ -2,6 +2,7 @@
 """ RFID reader """
 
 import os
+from datetime import datetime
 from evdev import InputDevice, categorize #, _ecodes
 from evdev.ecodes import EV_KEY
 from sig_app import Application
@@ -28,15 +29,19 @@ class RFIDReader(Application, PGapp):
         """ Write card_num to PG and csv """
         card_num = ''.join(self.card_num_list)
         print(card_num)
-        with open(RFID_CSV_FILE, 'a') as csv:
-            csv.write(card_num + '\n')
-        if not self.do_query(SQL_INSERT.format(card_num)):
+        csv_str = '{}^{}'.format(card_num, datetime.utcnow())
+        if self.do_query(SQL_INSERT.format(card_num)):
+            csv_str += '^DB'
+        else:
             print('DB Error')
-            # write to local CSV file
+            #csv_str += '^CSV'
+        with open(RFID_CSV_FILE, 'a') as csv:
+            csv.write(csv_str + '\n')
 
-    def _proc_until_enter(self):
+    def _proc_until_enter(self, arg_event):
         """ recognize pressed key """
         res = False
+        self.c_ev = categorize(arg_event)
         if self.c_ev.keystate == 0:  # key UP
             #print(c_ev, type(c_ev))
             print('st={}, code={}'.format(self.c_ev.keystate, self.c_ev.keycode))
@@ -64,9 +69,8 @@ class RFIDReader(Application, PGapp):
             self.do_read_one = True
             while self.do_read_one:
                 event = READER.read_one()
-                if event and event.type == EV_KEY:
-                    self.c_ev = categorize(event)
-                    if self._proc_until_enter():
+                if event and event.type == EV_KEY:  # прочитано и KEY
+                    if self._proc_until_enter(event):
                         self._write_card_num()
                         break
 
