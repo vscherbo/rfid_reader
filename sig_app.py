@@ -3,19 +3,21 @@
 """
 import time
 import signal
+import logging
 
 class Application:
     """ class for apps with signal handle """
     def __init__(self):
+        logging.getLogger(__name__).addHandler(logging.NullHandler())
         signal.signal(signal.SIGINT, lambda signal, frame: self._signal_handler())
         self.terminated = False
 
     def _signal_handler(self):
         self.terminated = True
-        print('signal_handler')
+        logging.debug('%s signal_handler', __name__)
 
     def _main(self):
-        print("I'm %s", self.__dict__)
+        logging.debug("Default _main() proc: %s", self.__dict__)
         time.sleep(3)
 
 
