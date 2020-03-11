@@ -51,7 +51,8 @@ class CSVWriter(PGapp):
         chk_period = 5
         logging.debug('listdir of %s', csv_dir)
         while self.do_loop:
-            fcsv_list = os.listdir(csv_dir)
+            fcsv_list = sorted(os.listdir(csv_dir))
+            self.csv_list.clear()
             for fcsv in fcsv_list:
                 logging.debug('reading csv file %s', fcsv)
                 with open('{}/{}'.format(csv_dir, fcsv), 'r') as csv:
@@ -59,21 +60,21 @@ class CSVWriter(PGapp):
                 if csv_str:
                     self.csv_list.append(csv_str)
                     csv_str = ''
-            logging.info('Found: csv_list=%s', self.csv_list)
             if self.csv_list:
+                logging.info('Found: csv_list=%s', self.csv_list)
                 csv_io = io.StringIO('\n'.join(self.csv_list))
                 if self.copy_from(csv_io, 'rep.rfid_history', sep='^', \
-                        columns=('card_num', 'dt_read')):
+                        columns=('card_num', 'dt_read'), reconnect=True):
                     # move csv to 99-archive
                     for fcsv in fcsv_list:
-                        os.rename(fcsv, '{}/{}'.format(arch_dir, fcsv))
+                        os.rename('{}/{}'.format(csv_dir, fcsv), '{}/{}'.format(arch_dir, fcsv))
                 else:
-                    # move csv to 98-failed
                     for fcsv in fcsv_list:
-                        os.rename(fcsv, '{}/{}'.format(failed_dir, fcsv))
+                        os.rename('{}/{}'.format(csv_dir, fcsv), '{}/{}'.format(failed_dir, fcsv))
 
+            logging.debug('Sleeping for %s...', chk_period)
             time.sleep(chk_period)
-            self.do_loop = stop()
+            self.do_loop = not stop()
 
     def _db_write(self):
         """ write to table rep.rfid_history """
@@ -136,7 +137,7 @@ class RFIDReader(Application, log_app.LogApp):
             try:
                 tmp.write(csv_str + '\n')
             except IOError as err:
-                logging.error('Cannot write to tmp_file. err=%s', err)
+                logging.error('Cannot write csv=[%s] to tmp_file. err=%s', csv_str, err)
             except:
                 logging.error("Unexpected error:%s", sys.exc_info()[0])
                 raise
@@ -163,34 +164,32 @@ class RFIDReader(Application, log_app.LogApp):
     def _missed_dirs(self):
         missed_dirs = []
         for i_dir in self.config['DIRS'].values():
-            logging.debug('i_dir=%s', i_dir)
+            logging.debug('check config dir=%s', i_dir)
             loc_dir = '{}/{}'.format(self.base_dir, i_dir)
             if not os.path.exists(loc_dir):
-                logging.debug('missed loc_dir=%s', loc_dir)
+                logging.error('missed loc_dir=%s', loc_dir)
                 missed_dirs.append(i_dir)
         return missed_dirs
 
     def _main(self):
         """ Just main """
 
-        missed_dirs = self._missed_dirs
-        if missed_dirs:
-            logging.error('Missed dirs: %s', missed_dirs)
-            self.terminated = True
-            th_csv = None
-        else:
-            #self.csv_writer.pg_connect()
-            th_csv = StoppableThread(target=self.csv_writer.chk_csv_dir, \
-                    kwargs={"csv_dir": self.config['DIRS']['csv_dir'],
-                            "arch_dir": self.config['DIRS']['arch_dir'],
-                            "failed_dir": self.config['DIRS']['failed_dir'],
-                            "stop": lambda: self.terminated})
-            th_csv.start()
+        self.terminated = self._missed_dirs
+        if self.terminated:
+            return
+
+        th_csv = StoppableThread(target=self.csv_writer.chk_csv_dir, \
+                kwargs={"csv_dir": self.config['DIRS']['csv_dir'],
+                        "arch_dir": self.config['DIRS']['arch_dir'],
+                        "failed_dir": self.config['DIRS']['failed_dir'],
+                        "stop": lambda: self.terminated})
+        th_csv.start()
 
         while not self.terminated:
             self.card_num_list = []
             #for event in READER.read_loop():
             self.do_read_one = True
+            logging.debug('DB Thread is_alive=%s', th_csv.is_alive())
             while self.do_read_one:
                 event = self.reader.read_one()
                 if event and event.type == EV_KEY:  # прочитано и KEY
@@ -199,7 +198,6 @@ class RFIDReader(Application, log_app.LogApp):
                         break
         if th_csv:
             th_csv.stop()
-            th_csv.join()
 
     def close(self):
         """ Close everything """
