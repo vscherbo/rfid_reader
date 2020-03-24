@@ -1,2 +1,3 @@
 evdev
+git+https://github.com/vscherbo/apps.git
 git+https://github.com/vscherbo/pg_app.git
