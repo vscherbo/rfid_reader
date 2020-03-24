@@ -117,18 +117,18 @@ class RFIDReader(Application, log_app.LogApp):
         self.reader.grab()
 
         self.csv_writer = CSVWriter(self.config)
-        if 'base_dir' in self.config['DIRS'].keys():
-            self.base_dir = self.config['DIRS']['base_dir']
-        else:
-            self.base_dir = os.path.dirname(__file__)
         logging.debug('base_dir=%s', self.base_dir)
         #self.tmp_dir = ''
         #self.csv_dir = ''
 
     @property
     def base_dir(self):
-        """ base_dir from conf file """
-        return self.config['DIRS']['base_dir']
+        """ base_dir from conf file if present """
+        if 'base_dir' in self.config['DIRS'].keys():
+            loc_dir = self.config['DIRS']['base_dir']
+        else:
+            loc_dir = os.path.dirname(__file__)
+        return loc_dir
 
     @property
     def tmp_dir(self):
