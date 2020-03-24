@@ -79,10 +79,12 @@ class CSVWriter(PGapp):
                         columns=('card_num', 'dt_read'), reconnect=True):
                     # move csv to 99-archive
                     for fcsv in fcsv_list:
-                        os.rename('{}/{}'.format(self.csv_dir, fcsv), '{}/{}'.format(self.arch_dir, fcsv))
+                        os.rename('{}/{}'.format(self.csv_dir, fcsv), \
+                                '{}/{}'.format(self.arch_dir, fcsv))
                 else:
                     for fcsv in fcsv_list:
-                        os.rename('{}/{}'.format(self.csv_dir, fcsv), '{}/{}'.format(self.failed_dir, fcsv))
+                        os.rename('{}/{}'.format(self.csv_dir, fcsv), \
+                                '{}/{}'.format(self.failed_dir, fcsv))
 
             logging.debug('Sleeping for %s...', chk_period)
             time.sleep(chk_period)
@@ -111,29 +113,46 @@ class RFIDReader(Application, log_app.LogApp):
         script_name = os.path.splitext(os.path.basename(__file__))[0]
         self.get_config('{}.conf'.format(script_name))
         super(RFIDReader, self).__init__()
-        self.csv_writer = CSVWriter(self.config)
-        #self.csv_writer = CSVWriter(self.config['PG']['pg_host'],\
-        #        self.config['PG']['pg_user'])
         self.reader = InputDevice(self.dev_file)
         self.reader.grab()
+
+        self.csv_writer = CSVWriter(self.config)
         if 'base_dir' in self.config['DIRS'].keys():
             self.base_dir = self.config['DIRS']['base_dir']
         else:
             self.base_dir = os.path.dirname(__file__)
         logging.debug('base_dir=%s', self.base_dir)
-        self.tmp_dir = ''
-        self.csv_dir = ''
+        #self.tmp_dir = ''
+        #self.csv_dir = ''
+
+    @property
+    def base_dir(self):
+        """ base_dir from conf file """
+        return self.config['DIRS']['base_dir']
+
+    @property
+    def tmp_dir(self):
+        """ tmp_dir from conf file """
+        return '{}/{}'.format(self.base_dir, self.config['DIRS']['tmp_dir'])
+
+    @property
+    def csv_dir(self):
+        """ csv_dir from conf file """
+        return '{}/{}'.format(self.base_dir, self.config['DIRS']['csv_dir'])
 
     @property
     def dev_file(self):
         """ Find RFID reader in /dev/input """
 
+        dev_file = None
         for inp in os.listdir(self.dev_id_dir):
             if RFID_NAME in inp:
                 dev_link = os.readlink('%s/%s' % (self.dev_id_dir, inp))
                 dev_file = '%s/%s' % (DEV_DIR, dev_link.replace('../', ''))
                 logging.info('RFID device found=%s', dev_file)
                 break
+        if not dev_file:
+            raise NameError('RFID [{}] reader not found'. format(RFID_NAME))
         return dev_file
 
     def _signal_handler(self):
@@ -148,7 +167,6 @@ class RFIDReader(Application, log_app.LogApp):
         logging.info('Try to save card_num=%s', card_num)
         csv_str = '{}^{}'.format(card_num, datetime.now())
 
-        #tmp_file = '{}/{}-{}.tmp'.format(self.config['DIRS']['tmp_dir'], int(time.time()), card_num)
         tmp_file = '{}/{}-{}.tmp'.format(self.tmp_dir, int(time.time()), card_num)
         with open(tmp_file, 'w') as tmp:
             try:
@@ -195,8 +213,8 @@ class RFIDReader(Application, log_app.LogApp):
         if self.terminated:
             return
 
-        self.tmp_dir = '{}/{}'.format(self.base_dir, self.config['DIRS']['tmp_dir'])
-        self.csv_dir = '{}/{}'.format(self.base_dir, self.config['DIRS']['csv_dir'])
+        #self.tmp_dir = '{}/{}'.format(self.base_dir, self.config['DIRS']['tmp_dir'])
+        #self.csv_dir = '{}/{}'.format(self.base_dir, self.config['DIRS']['csv_dir'])
 
         th_csv = StoppableThread(target=self.csv_writer.chk_csv_dir, \
                 kwargs={"stop": lambda: self.terminated})
@@ -235,7 +253,6 @@ class RFIDReader(Application, log_app.LogApp):
 
 if __name__ == '__main__':
     ARGS = log_app.PARSER.parse_args()
-    logging.debug(sys.version_info)
     APP = RFIDReader(args=ARGS)  #, pg_host='vm-pg-restore.arc.world', pg_user='arc_energo')
     APP.main_loop()
     APP.close()
