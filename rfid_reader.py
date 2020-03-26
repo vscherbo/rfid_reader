@@ -64,6 +64,7 @@ class CSVWriter(PGapp):
         logging.debug('listdir of %s', self.csv_dir)
         while self.do_loop:
             fcsv_list = sorted(os.listdir(self.csv_dir))
+            logging.debug('fcsv_list=%s', fcsv_list)
             self.csv_list.clear()
             for fcsv in fcsv_list:
                 logging.debug('reading csv file %s', fcsv)
@@ -75,12 +76,15 @@ class CSVWriter(PGapp):
             if self.csv_list:
                 logging.info('Found: csv_list=%s', self.csv_list)
                 csv_io = io.StringIO('\n'.join(self.csv_list))
-                if self.copy_from(csv_io, 'rep.rfid_history', sep='^', \
-                        columns=('card_num', 'dt_read'), reconnect=True):
+                res = self.copy_from(csv_io, 'rep.rfid_history', sep='^', \
+                        columns=('card_num', 'dt_read'), reconnect=True)
+                if res == 1:
                     # move csv to 99-archive
                     for fcsv in fcsv_list:
                         os.rename('{}/{}'.format(self.csv_dir, fcsv), \
                                 '{}/{}'.format(self.arch_dir, fcsv))
+                elif res == 2: # reconnect done but not copied
+                    pass # copy in the next loop
                 else:
                     for fcsv in fcsv_list:
                         os.rename('{}/{}'.format(self.csv_dir, fcsv), \
