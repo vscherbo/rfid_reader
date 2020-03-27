@@ -35,14 +35,15 @@ class StoppableThread(threading.Thread):
         return self._stop_event.is_set()
 
 
-class CSVWriter(PGapp):
+class CSVWriter(Application, PGapp, log_app.LogApp):
     """ Monitor csv dir and write found files to PG """
     # def __init__(self, pg_host, pg_user, config):
-    def __init__(self, config):
-        self.config = config
-        #super(CSVWriter, self).__init__(pg_host, pg_user)
-        super(CSVWriter, self).__init__(self.config['PG']['pg_host'],\
-                self.config['PG']['pg_user'])
+    def __init__(self, args):
+        log_app.LogApp.__init__(self, args=args)
+        script_name = os.path.splitext(os.path.basename(__file__))[0]
+        self.get_config('{}.conf'.format(script_name))
+        super(CSVWriter, self).__init__()
+        PGapp.__init__(self, self.config['PG']['pg_host'], self.config['PG']['pg_user'])
         if self.pg_connect():
             self.set_session(autocommit=True)
         if 'base_dir' in self.config['DIRS'].keys():
@@ -54,15 +55,20 @@ class CSVWriter(PGapp):
         self.failed_dir = '{}/{}'.format(self.base_dir, self.config['DIRS']['failed_dir'])
         self.csv_list = []
         self.do_loop = True
+        self.rfid_reader = RFIDReader(self.config)
 
-    # def chk_csv_dir(self, csv_dir, arch_dir, failed_dir, stop):
-    def chk_csv_dir(self, stop):
+    def _signal_handler(self):
+        logging.info('RFID signal_handler')
+        self.do_read_one = False
+        super(CSVWriter, self)._signal_handler()
+
+    def chk_csv_dir(self):
         """ Read "csv_dir" everey chk_period and write found files to PG
         """
         csv_str = ''
         chk_period = 5
         logging.debug('listdir of %s', self.csv_dir)
-        while self.do_loop:
+        while self.terminated:
             fcsv_list = sorted(os.listdir(self.csv_dir))
             logging.debug('fcsv_list=%s', fcsv_list)
             self.csv_list.clear()
@@ -92,7 +98,6 @@ class CSVWriter(PGapp):
 
             logging.debug('Sleeping for %s...', chk_period)
             time.sleep(chk_period)
-            self.do_loop = not stop()
 
     def _db_write(self):
         """ write to table rep.rfid_history """
@@ -105,22 +110,33 @@ class CSVWriter(PGapp):
         if self.do_query(SQL_INSERT.format(card_num)):
             logging.info('Saved to DB')
 
-class RFIDReader(Application, log_app.LogApp):
+    def _main(self):
+        """ Just main """
+
+        th_rfid = StoppableThread(target=self.rfid_reader.read_loop, \
+                kwargs={"stop": lambda: self.terminated})
+        th_rfid.start()
+
+        if th_rfid:
+            th_rfid.stop()
+
+    def close(self):
+        """ Close everything """
+        self.pg_close()
+        self.rfid_reader.close()
+
+class RFIDReader():
     """ RFID Reader loop app """
 
     dev_id_dir = '%s/by-id' % DEV_DIR
-    def __init__(self, args):
+    def __init__(self, config):
+        self.config = config
         self.do_read_one = True
         self.card_num_list = []
         self.postponed = False
-        log_app.LogApp.__init__(self, args=args)
-        script_name = os.path.splitext(os.path.basename(__file__))[0]
-        self.get_config('{}.conf'.format(script_name))
-        super(RFIDReader, self).__init__()
         self.reader = InputDevice(self.dev_file)
         self.reader.grab()
 
-        self.csv_writer = CSVWriter(self.config)
         logging.debug('base_dir=%s', self.base_dir)
         #self.tmp_dir = ''
         #self.csv_dir = ''
@@ -158,11 +174,6 @@ class RFIDReader(Application, log_app.LogApp):
         if not dev_file:
             raise NameError('RFID [{}] reader not found'. format(RFID_NAME))
         return dev_file
-
-    def _signal_handler(self):
-        logging.info('RFID signal_handler')
-        self.do_read_one = False
-        super(RFIDReader, self)._signal_handler()
 
 
     def _write_card_num(self):
@@ -210,46 +221,28 @@ class RFIDReader(Application, log_app.LogApp):
                 missed_dirs.append(i_dir)
         return missed_dirs
 
-    def _main(self):
+    def read_loop(self, stop):
         """ Just main """
 
-        self.terminated = self._missed_dirs
-        if self.terminated:
+        if self._missed_dirs:
             return
 
-        #self.tmp_dir = '{}/{}'.format(self.base_dir, self.config['DIRS']['tmp_dir'])
-        #self.csv_dir = '{}/{}'.format(self.base_dir, self.config['DIRS']['csv_dir'])
-
-        th_csv = StoppableThread(target=self.csv_writer.chk_csv_dir, \
-                kwargs={"stop": lambda: self.terminated})
-        """
-        th_csv = StoppableThread(target=self.csv_writer.chk_csv_dir, \
-                kwargs={"csv_dir": self.config['DIRS']['csv_dir'],
-                        "arch_dir": self.config['DIRS']['arch_dir'],
-                        "failed_dir": self.config['DIRS']['failed_dir'],
-                        "stop": lambda: self.terminated})
-        """
-        th_csv.start()
-
-        while not self.terminated:
+        while not stop():
             self.card_num_list = []
             #for event in READER.read_loop():
             self.do_read_one = True
-            logging.debug('DB Thread is_alive=%s', th_csv.is_alive())
+            #logging.debug('DB Thread is_alive=%s', th_csv.is_alive())
             while self.do_read_one:
                 event = self.reader.read_one()
                 if event and event.type == EV_KEY:  # read completed and EV_KEY
                     if self._proc_until_enter(event):
                         self._write_card_num()
                         break
-        if th_csv:
-            th_csv.stop()
 
     def close(self):
         """ Close everything """
         self.reader.ungrab()
         self.reader.close()
-        self.csv_writer.pg_close()
 
 
 #        with open(self.config['FILES']['RFID_CSV_FILE'], 'a') as csv:
@@ -257,6 +250,6 @@ class RFIDReader(Application, log_app.LogApp):
 
 if __name__ == '__main__':
     ARGS = log_app.PARSER.parse_args()
-    APP = RFIDReader(args=ARGS)  #, pg_host='vm-pg-restore.arc.world', pg_user='arc_energo')
+    APP = CSVWriter(args=ARGS)
     APP.main_loop()
     APP.close()
