@@ -9,6 +9,8 @@ import threading
 import time
 from datetime import datetime
 
+sys.path.append('/usr/lib/python3/dist-packages')
+import gpiod
 import log_app
 from evdev import InputDevice, categorize  # , _ecodes
 from evdev.ecodes import EV_KEY
@@ -18,6 +20,9 @@ from sig_app import Application
 RFID_NAME = 'RFID'
 DEV_DIR = '/dev/input'
 SQL_INSERT = """INSERT INTO rep.rfid_history(card_num) VALUES('{}');"""
+DOOR_LOCK_LINE = 68
+# 3 system and Alex
+SYSTEM_CARDS = ['0014966852', '0014952315', '0014951743', '0001597675', '1528324331']
 
 
 class StoppableThread(threading.Thread):
@@ -109,17 +114,28 @@ class CSVWriter(PGapp):
         if self.do_query(SQL_INSERT.format(card_num)):
             logging.info('Saved to DB')
 
+    def check_card_num(self, card_num):
+        """ lookup card_num in PG """
+        if card_num in SYSTEM_CARDS:
+            logging.info('SYSTEM card %s detected', card_num)
+            res = True
+        else:
+            # lookup in PG
+            res = card_num  # DEBUG
+            res = False  # DEBUG
+            logging.info('NOT system card %s detected', card_num)
+        return res
+
 
 class RFIDReader(Application, log_app.LogApp):
     """ RFID Reader loop app """
-
+    # pylint: disable=too-many-instance-attributes
     # dev_id_dir = '%s/by-id' % DEV_DIR
     dev_id_dir = f'{DEV_DIR}/by-id'
 
     def __init__(self, args):
         self.do_read_one = True
         self.card_num_list = []
-        self.postponed = False
         log_app.LogApp.__init__(self, args=args)
         script_name = os.path.splitext(os.path.basename(__file__))[0]
         self.get_config(f'{script_name}.conf')
@@ -131,6 +147,10 @@ class RFIDReader(Application, log_app.LogApp):
         logging.debug('base_dir=%s', self.base_dir)
         # self.tmp_dir = ''
         # self.csv_dir = ''
+        self.card_num = None
+        self.chip = gpiod.Chip('gpiochip0')
+        self.line = self.chip.get_line(DOOR_LOCK_LINE)
+        self.line.request(consumer='rfid_reader', type=gpiod.LINE_REQ_DIR_OUT)
 
     @ property
     def base_dir(self):
@@ -175,11 +195,10 @@ class RFIDReader(Application, log_app.LogApp):
 
     def _write_card_num(self):
         """ Write card_num to CSV """
-        card_num = ''.join(self.card_num_list)
-        logging.info('Try to save card_num=%s', card_num)
-        csv_str = f'{card_num}^{datetime.now()}'
+        logging.info('Try to save card_num=%s', self.card_num)
+        csv_str = f'{self.card_num}^{datetime.now()}'
 
-        tmp_file = f'{self.tmp_dir}/{int(time.time())}-{card_num}.tmp'
+        tmp_file = f'{self.tmp_dir}/{int(time.time())}-{self.card_num}.tmp'
         with open(tmp_file, 'w', encoding='utf8') as tmp:
             try:
                 tmp.write(csv_str + '\n')
@@ -203,8 +222,16 @@ class RFIDReader(Application, log_app.LogApp):
                 self.card_num_list.append(c_ev.keycode.replace('KEY_', ''))
             else:
                 logging.debug('ENTER detected. Exiting...')
+                self.card_num = ''.join(self.card_num_list)
                 res = True
         return res
+
+    def open_door(self):
+        """ open door if self.card_num found in DB """
+        if self.csv_writer.check_card_num(self.card_num):
+            self.line.set_value(1)  # HIGH
+            time.sleep(0.1)
+            self.line.set_value(0)  # LOW
 
     @ property
     def _missed_dirs(self):
@@ -247,6 +274,7 @@ class RFIDReader(Application, log_app.LogApp):
                 event = self.reader.read_one()
                 if event and event.type == EV_KEY:  # read completed and EV_KEY
                     if self._proc_until_enter(event):
+                        self.open_door()  # with checking self.card_num
                         self._write_card_num()
                         break
         if th_csv:
@@ -256,6 +284,8 @@ class RFIDReader(Application, log_app.LogApp):
         """ Close everything """
         self.reader.ungrab()
         self.reader.close()
+        self.line.release()
+        self.chip.close()
         self.csv_writer.pg_close()
 
 
