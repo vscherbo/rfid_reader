@@ -9,12 +9,10 @@ import threading
 import time
 from datetime import datetime
 
-sys.path.append('/usr/lib/python3/dist-packages')
-import gpiod
 import log_app
+import pg_app
 from evdev import InputDevice, categorize  # , _ecodes
 from evdev.ecodes import EV_KEY
-from pg_app import PGapp
 from sig_app import Application
 
 RFID_NAME = 'RFID'
@@ -23,6 +21,8 @@ SQL_INSERT = """INSERT INTO rep.rfid_history(card_num) VALUES('{}');"""
 DOOR_LOCK_LINE = 68
 # 3 system and Alex
 SYSTEM_CARDS = ['0014966852', '0014952315', '0014951743', '0001597675', '1528324331']
+
+SEL_CARD = "SELECT * FROM rep.rfid_emp_name WHERE card_num=%s;"
 
 
 class StoppableThread(threading.Thread):
@@ -42,7 +42,7 @@ class StoppableThread(threading.Thread):
         return self._stop_event.is_set()
 
 
-class CSVWriter(PGapp):
+class CSVWriter(pg_app.PGapp):
     """ Monitor csv dir and write found files to PG """
     # def __init__(self, pg_host, pg_user, config):
 
@@ -114,7 +114,7 @@ class CSVWriter(PGapp):
         if self.do_query(SQL_INSERT.format(card_num)):
             logging.info('Saved to DB')
 
-    def check_card_num(self, card_num):
+    def check_card_num_simple(self, card_num):
         """ lookup card_num in PG """
         if card_num in SYSTEM_CARDS:
             logging.info('SYSTEM card %s detected', card_num)
@@ -124,6 +124,28 @@ class CSVWriter(PGapp):
             res = card_num  # DEBUG
             res = False  # DEBUG
             logging.info('NOT system card %s detected', card_num)
+        return res
+
+    def check_card_num(self, card_num):
+        """ lookup card_num in PG """
+        if card_num in SYSTEM_CARDS:
+            logging.info('SYSTEM card %s detected', card_num)
+            res = True
+        else:
+            # lookup in PG
+            res = False
+            self.pg_connect(cursor_factory=pg_app.psycopg2.extras.RealDictCursor)
+            sql = self.curs_dict.mogrify(SEL_CARD, (card_num,))
+            if self.do_query(sql, reconnect=True, dict_mode=True):
+                rec = self.curs_dict.fetchone()
+                logging.debug('rec[card_num]=%s, rec[Имя]=%s, card_num=%s', rec['card_num'],
+                              rec['Имя'],
+                              card_num)
+                res = rec['card_num'] == card_num
+            if res:
+                logging.info('Detected user=%s, card=%s', rec['Имя'], card_num)
+            else:
+                logging.warning('NOT registered card %s detected', card_num)
         return res
 
 
@@ -293,6 +315,8 @@ class RFIDReader(Application, log_app.LogApp):
 
 
 if __name__ == '__main__':
+    sys.path.append('/usr/lib/python3/dist-packages')
+    import gpiod
     ARGS = log_app.PARSER.parse_args()
     APP = RFIDReader(args=ARGS)  # , pg_host='vm-pg-restore.arc.world', pg_user='arc_energo')
     APP.main_loop()
