@@ -75,7 +75,8 @@ class CSVWriter(pg_app.PGapp):
         logging.debug('listdir of %s', self.csv_dir)
         while self.do_loop:
             fcsv_list = sorted(os.listdir(self.csv_dir))
-            logging.debug('fcsv_list=%s', fcsv_list)
+            if len(fcsv_list) > 0:
+                logging.debug('fcsv_list=%s', fcsv_list)
             self.csv_list.clear()
             for fcsv in fcsv_list:
                 logging.debug('reading csv file %s', fcsv)
@@ -99,7 +100,7 @@ class CSVWriter(pg_app.PGapp):
                     for fcsv in fcsv_list:
                         os.rename(f'{self.csv_dir}/{fcsv}', f'{self.failed_dir}/{fcsv}')
 
-            logging.debug('Sleeping for %s...', chk_period)
+            # logging.debug('Sleeping for %s...', chk_period)
             time.sleep(chk_period)
             self.do_loop = not stop()
 
@@ -138,10 +139,11 @@ class CSVWriter(pg_app.PGapp):
             sql = self.curs_dict.mogrify(SEL_CARD, (card_num,))
             if self.do_query(sql, reconnect=True, dict_mode=True):
                 rec = self.curs_dict.fetchone()
-                logging.debug('rec[card_num]=%s, rec[Имя]=%s, card_num=%s', rec['card_num'],
-                              rec['Имя'],
-                              card_num)
-                res = rec['card_num'] == card_num
+                if rec:
+                    logging.debug('rec[card_num]=%s, rec[Имя]=%s, card_num=%s', rec['card_num'],
+                                  rec['Имя'],
+                                  card_num)
+                    res = rec['card_num'] == card_num
             if res:
                 logging.info('Detected user=%s, card=%s', rec['Имя'], card_num)
             else:
@@ -296,8 +298,11 @@ class RFIDReader(Application, log_app.LogApp):
                 event = self.reader.read_one()
                 if event and event.type == EV_KEY:  # read completed and EV_KEY
                     if self._proc_until_enter(event):
-                        self.open_door()  # with checking self.card_num
                         self._write_card_num()
+                        try:
+                            self.open_door()  # with checking self.card_num
+                        except Exception as e:
+                            logging.error('open_door exception=%s', str(e))
                         break
         if th_csv:
             th_csv.stop()
