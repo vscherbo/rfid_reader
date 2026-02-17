@@ -127,6 +127,30 @@ class CSVWriter(pg_app.PGapp):
             logging.info('NOT system card %s detected', card_num)
         return res
 
+    def check_card_num_loc(self, card_num):
+        """ lookup card_num in PG """
+        if card_num in SYSTEM_CARDS:
+            logging.info('SYSTEM card %s detected', card_num)
+            res = True
+        else:
+            # lookup in PG
+            res = False
+            loc_curs = self.conn.cursor(cursor_factory=pg_app.psycopg2.extras.RealDictCursor)
+            sql = loc_curs.mogrify(SEL_CARD, (card_num,))
+
+            if loc_curs.execute(sql):
+                rec = loc_curs.fetchone()
+                if rec:
+                    logging.debug('rec[card_num]=%s, rec[Имя]=%s, card_num=%s', rec['card_num'],
+                                  rec['Имя'],
+                                  card_num)
+                    res = rec['card_num'] == card_num
+            if res:
+                logging.info('Detected user=%s, card=%s', rec['Имя'], card_num)
+            else:
+                logging.warning('NOT registered card %s detected', card_num)
+        return res
+
     def check_card_num(self, card_num):
         """ lookup card_num in PG """
         if card_num in SYSTEM_CARDS:
