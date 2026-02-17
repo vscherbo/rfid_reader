@@ -1,22 +1,20 @@
 #!/usr/bin/env python
 """ RFID reader """
-import collections  # Добавлен для эмулятора
+
 import io
 import logging
 import os
 import sys
 import threading
 import time
-from abc import ABC, abstractmethod  # Добавлен для абстракции
 from datetime import datetime
 
 import log_app
-import pg_app
-from evdev import InputEvent  # Добавлен для эмулятора
-from evdev.ecodes import EV_KEY, ecodes  # Добавлен для эмулятора
+from evdev import InputDevice, categorize  # , _ecodes
+from evdev.ecodes import EV_KEY
 from sig_app import Application
 
-# import gpiod # Импорт перемещен вниз, но используется в __init__
+import pg_app
 
 RFID_NAME = 'RFID'
 DEV_DIR = '/dev/input'
@@ -24,153 +22,9 @@ SQL_INSERT = """INSERT INTO rep.rfid_history(card_num) VALUES('{}');"""
 DOOR_LOCK_LINE = 68
 # 3 system and Alex
 SYSTEM_CARDS = ['0014966852', '0014952315', '0014951743', '0001597675', '1528324331']
+
 SEL_CARD = "SELECT * FROM rep.rfid_emp_name WHERE card_num=%s;"
 
-# --- НОВЫЕ КЛАССЫ АБСТРАКЦИИ И ЭМУЛЯТОРА ---
-
-
-class EventSource(ABC):
-    """Абстрактный класс для источника событий."""
-    @abstractmethod
-    def read_one(self):
-        pass
-
-    @abstractmethod
-    def grab(self):
-        pass
-
-    @abstractmethod
-    def close(self):
-        pass
-
-
-class RealInputDevice(EventSource):
-    """Обертка для реального InputDevice."""
-
-    def __init__(self, device_path):
-        from evdev import InputDevice
-        self.device = InputDevice(device_path)
-
-    def read_one(self):
-        return self.device.read_one()
-
-    def grab(self):
-        self.device.grab()
-
-    def close(self):
-        self.device.close()
-
-
-class EmulatedRFIDReader(EventSource):
-    """
-    Эмулятор RFID-считывателя. Генерирует события клавиш, имитируя реальное устройство.
-    """
-    DEFAULT_CARDS = [
-        '0006619742',  # Карта из лога
-        '0011223344',
-        '0055667788',
-        '0099887766'
-    ]
-
-    def __init__(self, cards=None, keypress_delay=0.016, card_interval=5.0):
-        self.cards = cards if cards is not None else self.DEFAULT_CARDS
-        if not self.cards:
-            raise ValueError("Список карт для эмуляции не может быть пустым.")
-        self.keypress_delay = keypress_delay
-        self.card_interval = card_interval
-        self.current_card_index = 0
-        self.current_char_index = -1  # -1 означает, что мы готовы начать новую карту
-        self.wait_start_time = None
-        self.pending_events_queue = collections.deque()
-        self.lock = threading.Lock()
-
-    def grab(self):
-        """Для совместимости."""
-        pass
-
-    def close(self):
-        """Для совместимости."""
-        pass
-
-    def read_one(self):
-        """
-        Имитирует read_one() от evdev.InputDevice.
-        Возвращает InputEvent для следующего символа или KEY_ENTER.
-        Учитывает задержки между нажатиями и между картами.
-        """
-        with self.lock:
-            # 1. Обработать накопленные события (DOWN/UP пара)
-            if self.pending_events_queue:
-                return self.pending_events_queue.popleft()
-
-            # 2. Проверить, ждем ли мы перед началом новой карты?
-            if self.wait_start_time is not None:
-                if time.time() < self.wait_start_time:
-                    # Спит поток, вызывающий read_one, до истечения времени ожидания.
-                    # Это блокирует основной цикл, но соответствует требованиям "фиксированный интервал".
-                    time.sleep(max(0, self.wait_start_time - time.time()))
-                self.wait_start_time = None  # Сбросить таймер ожидания
-                self.current_char_index = 0  # Начинаем с первого символа
-
-            # 3. Генерация события для текущего символа/состояния
-            card_to_send = self.cards[self.current_card_index]
-
-            if self.current_char_index < len(card_to_send):  # Печатаем символы карты
-                char = card_to_send[self.current_char_index]
-                keycode_str = f'KEY_{char}'
-                # Проверим, существует ли такой keycode
-                try:
-                    keycode_val = ecodes[keycode_str]
-                except KeyError:
-                    logging.warning(f"Emulator: Unknown keycode {keycode_str}, skipping character.")
-                    self.current_char_index += 1
-                    # Рекурсивный вызов после изменения индекса
-                    return self.read_one()
-
-                # Генерируем пару DOWN/UP
-                timestamp_sec = int(time.time())
-                timestamp_usec = int((time.time() % 1) * 1e6)
-                down_event = InputEvent(timestamp_sec, timestamp_usec,
-                                        ecodes.EV_KEY, keycode_val, 1)  # DOWN
-                up_event = InputEvent(timestamp_sec, timestamp_usec,
-                                      ecodes.EV_KEY, keycode_val, 0)   # UP
-
-                # Сначала в очередь UP (это то, что ловит _proc_until_enter)
-                self.pending_events_queue.append(up_event)
-                # Теперь возвращаем DOWN
-                self.current_char_index += 1
-                if self.current_char_index <= len(card_to_send):
-                    time.sleep(self.keypress_delay)  # Задержка после возврата DOWN
-                return down_event
-
-            elif self.current_char_index == len(card_to_send):  # Печатаем ENTER
-                keycode_str = 'KEY_ENTER'
-                keycode_val = ecodes.ecodes[keycode_str]
-                timestamp_sec = int(time.time())
-                timestamp_usec = int((time.time() % 1) * 1e6)
-                down_event = InputEvent(timestamp_sec, timestamp_usec,
-                                        ecodes.EV_KEY, keycode_val, 1)  # DOWN
-                up_event = InputEvent(timestamp_sec, timestamp_usec,
-                                      ecodes.EV_KEY, keycode_val, 0)   # UP
-
-                self.pending_events_queue.append(up_event)
-                self.current_char_index += 1  # Переходим в состояние "после ENTER"
-                time.sleep(self.keypress_delay)  # Задержка после возврата DOWN ENTER
-                return down_event
-
-            # После ENTER, готовимся к следующей карте
-            elif self.current_char_index > len(card_to_send):
-                # Устанавливаем время, когда можно начинать следующую карту
-                self.wait_start_time = time.time() + self.card_interval
-                self.current_card_index = (self.current_card_index +
-                                           1) % len(self.cards)  # Зацикливание
-                logging.info(
-                    f"Emulator: Waiting {self.card_interval}s before scanning next card ({self.cards[self.current_card_index]})...")
-                # Рекурсивный вызов, который сработает после задержки
-                return self.read_one()
-
-
-# --- КОНЕЦ НОВЫХ КЛАССОВ ---
 
 class StoppableThread(threading.Thread):
     """Thread class with a stop() method. The thread itself has to check
@@ -235,8 +89,11 @@ class CSVWriter(pg_app.PGapp):
             if self.csv_list:
                 logging.info('Found: csv_list=%s', self.csv_list)
                 csv_io = io.StringIO('\n'.join(self.csv_list))
-                res = self.copy_from(csv_io, 'rep.rfid_history', sep='^',
-                                     columns=('card_num', 'dt_read'), reconnect=True)
+                # res = self.copy_from(csv_io, 'rep.rfid_history', sep='^',
+                #                     columns=('card_num', 'dt_read'), reconnect=True)
+                copy_sql = "COPY rep.rfid_history(card_num, dt_read) FROM STDIN WITH DELIMITER '^'"
+                res = self.copy_expert(copy_sql, csv_io)
+
                 if res == 1:
                     # move csv to 99-archive
                     for fcsv in fcsv_list:
@@ -307,33 +164,26 @@ class RFIDReader(Application, log_app.LogApp):
     def __init__(self, args):
         self.do_read_one = True
         self.card_num_list = []
-        self.args = args  # Сохраняем args для доступа к флагу эмуляции
         log_app.LogApp.__init__(self, args=args)
         script_name = os.path.splitext(os.path.basename(__file__))[0]
         self.get_config(f'{script_name}.conf')
         super().__init__()
-
-        # --- Новая логика выбора устройства ---
-        if self.args.emulate_rfid:
-            logging.info("Using EMULATED RFID reader.")
-            # Пример: передаем конкретные карты для тестирования
-            self.reader = EmulatedRFIDReader(
-                cards=['0006619742', '1111111111'], keypress_delay=0.016, card_interval=5.0)
-        else:
-            logging.info("Using PHYSICAL RFID reader.")
-            self.reader = RealInputDevice(self.dev_file)  # Используем обертку
-
-        self.reader.grab()
-        # --- Конец новой логики ---
 
         self.csv_writer = CSVWriter(self.config)
         logging.debug('base_dir=%s', self.base_dir)
         # self.tmp_dir = ''
         # self.csv_dir = ''
         self.card_num = None
-        self.chip = gpiod.Chip('gpiochip0')
-        self.line = self.chip.get_line(DOOR_LOCK_LINE)
-        self.line.request(consumer='rfid_reader', type=gpiod.LINE_REQ_DIR_OUT)
+        if self.args.emulate_rfid:
+            self.reader = None
+            self.chip = None
+            self.line = None
+        else:
+            self.reader = InputDevice(self.dev_file)
+            self.reader.grab()
+            self.chip = gpiod.Chip('gpiochip0')
+            self.line = self.chip.get_line(DOOR_LOCK_LINE)
+            self.line.request(consumer='rfid_reader', type=gpiod.LINE_REQ_DIR_OUT)
 
     @ property
     def base_dir(self):
@@ -454,42 +304,30 @@ class RFIDReader(Application, log_app.LogApp):
             self.do_read_one = True
             logging.debug('DB Thread is_alive=%s', th_csv.is_alive())
             while self.do_read_one:
-                event = self.reader.read_one()
-                if event and event.type == EV_KEY:  # read completed and EV_KEY
-                    if self._proc_until_enter(event):
-                        self._write_card_num()
-                        try:
-                            self.open_door()  # with checking self.card_num
-                        except Exception as excp:
-                            logging.error('open_door exception=%s', str(excp))
-                        break
+                time.sleep(3)
+
         if th_csv:
             th_csv.stop()
 
     def close(self):
         """ Close everything """
-        # Вызов grab/release/close теперь зависит от типа self.reader
-        # Но grab вызывается в __init__, а ungrab/close в close.
-        # Убедимся, что методы exist.
-        # if hasattr(self.reader, 'ungrab'): # RealInputDevice имеет ungrab, EmulatedRFIDReader - нет
-        #    self.reader.ungrab() # Только для реального устройства
-        # Просто вызовем close, который есть у обоих.
-        # evdev.InputDevice.ungrab() вызывается перед close().
-        # Проверим, есть ли ungrab у текущего self.reader.
-        # Лучше сделать аккуратно.
-        if isinstance(self.reader, RealInputDevice):
-            self.reader.device.ungrab()  # Явно вызвать ungrab у реального устройства
-        self.reader.close()  # Вызовет close у любого EventSource
-        self.line.release()
-        self.chip.close()
+        if self.reader:
+            self.reader.ungrab()
+            self.reader.close()
+        if self.line:
+            self.line.release()
+        if self.chip:
+            self.chip.close()
         self.csv_writer.pg_close()
 
-# ... (остальной код классов без изменений) ...
+
+#        with open(self.config['FILES']['RFID_CSV_FILE'], 'a') as csv:
 
 
 if __name__ == '__main__':
     sys.path.append('/usr/lib/python3/dist-packages')
-    # import gpiod
+    sys.path.append('/usr/lib64/python3.9/site-packages')
+    import gpiod
 
     log_app.PARSER.add_argument('--emulate_rfid', action='store_true', help='EMU mode')
 
