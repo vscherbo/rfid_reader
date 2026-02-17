@@ -301,8 +301,8 @@ class RFIDReader(Application, log_app.LogApp):
                         self._write_card_num()
                         try:
                             self.open_door()  # with checking self.card_num
-                        except Exception as e:
-                            logging.error('open_door exception=%s', str(e))
+                        except Exception as excp:
+                            logging.error('open_door exception=%s', str(excp))
                         break
         if th_csv:
             th_csv.stop()
