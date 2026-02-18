@@ -10,11 +10,10 @@ import time
 from datetime import datetime
 
 import log_app
-from evdev import InputDevice, categorize  # , _ecodes
-from evdev.ecodes import EV_KEY
-from sig_app import Application
-
 import pg_app
+from evdev import InputDevice, categorize  # , _ecodes
+# from evdev.ecodes import EV_KEY
+from sig_app import Application
 
 RFID_NAME = 'RFID'
 DEV_DIR = '/dev/input'
@@ -89,10 +88,10 @@ class CSVWriter(pg_app.PGapp):
             if self.csv_list:
                 logging.info('Found: csv_list=%s', self.csv_list)
                 csv_io = io.StringIO('\n'.join(self.csv_list))
-                # res = self.copy_from(csv_io, 'rep.rfid_history', sep='^',
-                #                     columns=('card_num', 'dt_read'), reconnect=True)
-                copy_sql = "COPY rep.rfid_history(card_num, dt_read) FROM STDIN WITH DELIMITER '^'"
-                res = self.copy_expert(copy_sql, csv_io)
+                res = self.copy_from(csv_io, 'rep.rfid_history', sep='^',
+                                     columns=('card_num', 'dt_read'), reconnect=True)
+                # copy_sql = "COPY rep.rfid_history(card_num, dt_read) FROM STDIN WITH DELIMITER '^'"
+                # res = self.copy_expert(copy_sql, csv_io)
 
                 if res == 1:
                     # move csv to 99-archive
