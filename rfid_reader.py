@@ -127,30 +127,6 @@ class CSVWriter(pg_app.PGapp):
             logging.info('NOT system card %s detected', card_num)
         return res
 
-    def check_card_num_loc(self, card_num):
-        """ lookup card_num in PG """
-        if card_num in SYSTEM_CARDS:
-            logging.info('SYSTEM card %s detected', card_num)
-            res = True
-        else:
-            # lookup in PG
-            res = False
-            loc_curs = self.conn.cursor(cursor_factory=pg_app.psycopg2.extras.RealDictCursor)
-            sql = loc_curs.mogrify(SEL_CARD, (card_num,))
-
-            if loc_curs.execute(sql):
-                rec = loc_curs.fetchone()
-                if rec:
-                    logging.debug('rec[card_num]=%s, rec[Имя]=%s, card_num=%s', rec['card_num'],
-                                  rec['Имя'],
-                                  card_num)
-                    res = rec['card_num'] == card_num
-            if res:
-                logging.info('Detected user=%s, card=%s', rec['Имя'], card_num)
-            else:
-                logging.warning('NOT registered card %s detected', card_num)
-        return res
-
     def check_card_num(self, card_num):
         """ lookup card_num in PG """
         if card_num in SYSTEM_CARDS:
@@ -158,20 +134,38 @@ class CSVWriter(pg_app.PGapp):
             res = True
         else:
             # lookup in PG
+            # PROD:
             res = False
-            self.pg_connect(cursor_factory=pg_app.psycopg2.extras.RealDictCursor)
-            sql = self.curs_dict.mogrify(SEL_CARD, (card_num,))
-            if self.do_query(sql, reconnect=True, dict_mode=True):
-                rec = self.curs_dict.fetchone()
-                if rec:
-                    logging.debug('rec[card_num]=%s, rec[Имя]=%s, card_num=%s', rec['card_num'],
-                                  rec['Имя'],
-                                  card_num)
-                    res = rec['card_num'] == card_num
+            # DEBUG only: res = True
+            # self.pg_connect(cursor_factory=pg_app.psycopg2.extras.RealDictCursor)
+            self.curs_dict = self.conn.cursor(cursor_factory=pg_app.psycopg2.extras.RealDictCursor)
+            try:
+                sql = self.curs.mogrify(SEL_CARD, (card_num,))
+                logging.debug('curs sql=%s', sql)
+                sql = self.curs_dict.mogrify(SEL_CARD, (card_num,))
+                logging.debug('curs_dict sql=%s', sql)
+                if self.do_query(sql, reconnect=True, dict_mode=True):
+                    rec = self.curs_dict.fetchone()
+                    logging.debug('curs_dict rec=%s', rec)
+                    # rec = self.curs.fetchone()
+                    if rec:
+                        try:
+                            logging.debug('rec[card_num]=%s, rec[Имя]=%s, card_num=%s', rec['card_num'],
+                                          rec['Имя'],
+                                          card_num)
+                            res = rec['card_num'] == card_num
+                        except Exception as excp:
+                            logging.error('An exception excp=%s', str(excp))
+            except Exception as excp:
+                logging.error('An exception excp=%s', str(excp))
             if res:
-                logging.info('Detected user=%s, card=%s', rec['Имя'], card_num)
+                # logging.info('Detected user=%s, card=%s', rec['Имя'], card_num)
+                logging.info('Debug PG query, card=%s', card_num)
             else:
                 logging.warning('NOT registered card %s detected', card_num)
+        logging.debug('Exiting with res=%s', res)
+
+        # DEBUG only res = True
         return res
 
 
@@ -276,7 +270,12 @@ class RFIDReader(Application, log_app.LogApp):
 
     def open_door(self):
         """ open door if self.card_num found in DB """
-        if self.csv_writer.check_card_num(self.card_num):
+        # if self.csv_writer.check_card_num(self.card_num):
+        logging.debug('start with card_num=%s', self.card_num)
+        loc_res = self.csv_writer.check_card_num(self.card_num)
+        logging.debug('loc_res=%s', loc_res)
+
+        if loc_res:
             self.line.set_value(1)  # HIGH
             time.sleep(0.1)
             self.line.set_value(0)  # LOW
